@@ -1,0 +1,79 @@
+```csv
+🪄 Mage Tower,Seva,МикитаЕфр,Саша,НикитаЕв,Alexey,,,,,MAX LEVEL
+🛡️ Armor,100,,1,,,,,,,100
+👢 Boots,78,,,,,,,,,78
+👑 Helm,88,,,,,,,,,88
+🔥 Fire Staff,69,,,,,,,,,69
+🌟 Holy Staff,76,,,,,,,,,76
+🔮 Arcane,2,,38,,,,,,,38
+❄️ Frost,0,,,,,,,,,0
+💀 Curse,19,,,,,,,,,19
+📖 Offhand,53,,,,,,,,,53
+🏹 Bow Tower,,,,,,,,,,0
+🛡️ Armor,100,,2,30,,,,,,100
+👢 Leather Boots,49,27,1,30,,,,,,49
+👑 Helm,43,,2,30,,,,,,43
+🏹 Bow,63,,,10,,,,,,63
+🔪 Dagger,15,48,,,,,,,,48
+🔱 Spear,,,,10,,,,,,10
+🌲 Quarterstaff,,15,46,,,,,,,46
+🐾 Shapeshift,34,11,1,,,,,,,34
+🌿 Druid Staff,,17,30,,,,,,,30
+📖 Offhand,1,,42,,,,,,,42
+⚔️ Sword Tower,,,,,,,,,,0
+🛡️ Armor,8,62,,,,,,,,62
+👢 Boots,,1,33,,,,,,,33
+👑 Helm,71,5,2,,,,,,,71
+⚔️ Sword,61,1,,10,,,,,,61
+🪓 Axe,58,,,,,,,,,58
+🔨 Mace,15,15,,,27,,,,,27
+🔨 Hammer,,,,,,,,,,0
+🥊 Gloves,,11,1,,,,,,,11
+🏹 Crossbow,,,,10,,,,,,10
+🛡️ Shield,64,,,,,,,,,64
+⛏️ Refining Ore,,,,,,,,,,0
+IV,40,,,,75,,,,,75
+V,44,,,,100,,,,,100
+VI,24,,,,70,,,,,70
+VII,5,,,,4,,,,,5
+VIII,0,,,,0,,,,,0
+```
+
+This CSV represents data over players (Seva, Микита Ефр, Саша, Никита Ев, Alexey).
+
+First attached screenshot is how it looks like in color. The second screenshot is rules (ranges) that each value follows in order to have its unique color. This color logic arrives from the game Albion Online and its level requirements for a craft.
+
+Write golang program that will be a replacement for this spreadsheet data. The program role is to be a chatbot for Telegram messenger. Here is the list of important requirements:
+
+- golang
+- CLI mode
+- Server mode (-via argument)
+- Both CLI and Server (BOT) mode share exactly the same commands
+- Telegram API as for bot protocol
+- Code follow SOLID practices, so it is easy to integrate with other messangers like Discord in the future (no need for this integration now, focus on Telegram and abstraction)
+- Each user ID is a salted hash derived from messenger network user ID (Telegram or Discord in future)
+- All data operated stored in a simple JSON file, that follows CSV example, where instead of player nicknames are messenger nicknames and ids, to identify owners data
+- https://github.com/spf13/viper - config via ENV variables or .env file
+- https://github.com/spf13/cobra - to build CLI menu levels
+- The bot is meant to be added to a "chat group" and whoever writes to it, represented as current user.
+- After each command, bot reports back the confirmation or failure (if any).
+
+The given example of CSV data, shares unusual table structure starting with ⛏️ Refining Ore
+This is a separate data and its own category "refining".
+Refinging can be:
+
+- ore
+- skin
+- cotton
+
+And ranging from level 1 to level 8. Each level have its own value. In the exampled CSV is data for levels 4 to 8, as an example.
+
+Here is a list of commands as an example:
+
+- /craft set armor 100 - this will put a value of 100 in armor craft for current user,
+- /craft - prints all the craft table, similar to an example
+- /craft armor - prints a row with usernames and a row with all armor values, ordered by value DESC (first place meaning the biggest value if any, to identify the most skilled crafter username)
+- /refine - prints all the refine table
+- /refine ore - in the same format as /craft armor prints data about levels and its values of ore refining
+- /refine set ore 100 - sets a value of 100 to ore for the current user (similar to /craft set armor 100 command)
+
