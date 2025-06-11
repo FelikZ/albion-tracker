@@ -140,32 +140,23 @@ func (t *TelegramClient) Start() error {
 		var response string
 		var err error
 
-		rootCmd := createRootCmd(
-			func(cmd, subArgs string) (string, error) {
-				return t.handler.HandleCraftCommand(userID, userName, []string{cmd, subArgs})
-			},
-			func(cmd, subArgs string) (string, error) {
-				return t.handler.HandleRefineCommand(userID, userName, []string{cmd, subArgs})
-			})
+		rootCmd := createRootCmd(true)
 
 		rootCmd.SetArgs(append([]string{command}, args...))
 
 		// Execute the root command
 		if err := rootCmd.Execute(); err != nil {
 			response = fmt.Sprintf("Error: %v", err)
-		} else {
-			// This part is tricky because cobra writes to stdout. We'll capture it.
-			// For a bot, a different approach for response handling would be better.
-			// For now, we'll assume the command handler returns the response.
-			// Let's adapt the command execution slightly for the bot.
-			switch command {
-			case "craft":
-				response, err = t.handler.HandleCraftCommand(userID, userName, args)
-			case "refine":
-				response, err = t.handler.HandleRefineCommand(userID, userName, args)
-			default:
-				response = "Unknown command. Available commands: /craft, /refine"
-			}
+		}
+
+		switch command {
+		case "craft":
+			fmt.Println("HandleCraftCommand inside else block")
+			response, err = t.handler.HandleCraftCommand(userID, userName, args)
+		case "refine":
+			response, err = t.handler.HandleRefineCommand(userID, userName, args)
+		default:
+			response = "Unknown command. Available commands: /craft, /refine"
 		}
 
 		if err != nil {
@@ -633,7 +624,7 @@ func initConfig() {
 }
 
 // Cobra Commands
-func createRootCmd(craftAction func(cmd, args string) (string, error), refineAction func(cmd, args string) (string, error)) *cobra.Command {
+func createRootCmd(serverMode bool) *cobra.Command {
 	var rootCmd = &cobra.Command{
 		Use:   "albion-tracker",
 		Short: "Albion Online craft and refining tracker",
@@ -643,8 +634,8 @@ func createRootCmd(craftAction func(cmd, args string) (string, error), refineAct
 		SilenceUsage:  true,
 	}
 
-	var serverMode bool
-	rootCmd.PersistentFlags().BoolVarP(&serverMode, "server", "s", false, "Run in server mode for Telegram")
+	var serverModeArg bool
+	rootCmd.PersistentFlags().BoolVarP(&serverModeArg, "server", "s", false, "Run in server mode for Telegram")
 
 	// CLI/Bot commands
 	var craftCmd = &cobra.Command{
@@ -695,10 +686,10 @@ func createRootCmd(craftAction func(cmd, args string) (string, error), refineAct
 func runCommand(isServer bool, command string, args []string) {
 	if isServer {
 		// Server logic is initiated from the main function's server flag
-		log.Println("Server mode is active. Waiting for commands via messenger.")
-	} else {
-		runCLICommand(command, args)
+		return
 	}
+
+	runCLICommand(command, args)
 }
 
 func runServer() {
@@ -734,9 +725,6 @@ func runCLICommand(command string, args []string) {
 func main() {
 	initConfig()
 
-	// We are not using the actions here, as the logic is now inside the command runners
-	rootCmd := createRootCmd(nil, nil)
-
 	// A special check for server mode that bypasses Cobra's usual execution flow
 	// This allows the bot to run as a long-running process
 	args := os.Args[1:]
@@ -752,6 +740,9 @@ func main() {
 		runServer()
 	} else {
 		// Run in CLI mode
+		// We are not using the actions here, as the logic is now inside the command runners
+		rootCmd := createRootCmd(isServer)
+
 		if err := rootCmd.Execute(); err != nil {
 			// We print the error here because SilenceErrors is on
 			fmt.Fprintln(os.Stderr, "Error:", err)
