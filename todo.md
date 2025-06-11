@@ -1,0 +1,3 @@
+- store file somewhere in cloud
+- separate key for release
+- deploy to NAS
