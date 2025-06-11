@@ -18,10 +18,10 @@ import (
 
 // Domain models
 type UserData struct {
-	ID       string         `json:"id"`
-	Name     string         `json:"name"`
-	Crafts   map[string]int `json:"crafts"`
-	Refining map[string]int `json:"refining"`
+	ID       string                    `json:"id"`
+	Name     string                    `json:"name"`
+	Crafts   map[string]int            `json:"crafts"`
+	Refining map[string]map[string]int `json:"refining"` // Changed to support levels
 }
 
 type GameData struct {
@@ -64,6 +64,10 @@ func (f *FileDataStore) LoadData() (*GameData, error) {
 	file, err := ioutil.ReadFile(f.filename)
 	if err != nil {
 		return nil, err
+	}
+	// Handle empty file case
+	if len(file) == 0 {
+		return data, nil
 	}
 
 	err = json.Unmarshal(file, data)
@@ -129,19 +133,39 @@ func (t *TelegramClient) Start() error {
 			userName = update.Message.From.FirstName
 		}
 
+		// The command is extracted and arguments are parsed from the message.
 		command := update.Message.Command()
 		args := strings.Fields(update.Message.CommandArguments())
 
 		var response string
 		var err error
 
-		switch command {
-		case "craft":
-			response, err = t.handler.HandleCraftCommand(userID, userName, args)
-		case "refine":
-			response, err = t.handler.HandleRefineCommand(userID, userName, args)
-		default:
-			response = "Unknown command. Available commands: /craft, /refine"
+		rootCmd := createRootCmd(
+			func(cmd, subArgs string) (string, error) {
+				return t.handler.HandleCraftCommand(userID, userName, []string{cmd, subArgs})
+			},
+			func(cmd, subArgs string) (string, error) {
+				return t.handler.HandleRefineCommand(userID, userName, []string{cmd, subArgs})
+			})
+
+		rootCmd.SetArgs(append([]string{command}, args...))
+
+		// Execute the root command
+		if err := rootCmd.Execute(); err != nil {
+			response = fmt.Sprintf("Error: %v", err)
+		} else {
+			// This part is tricky because cobra writes to stdout. We'll capture it.
+			// For a bot, a different approach for response handling would be better.
+			// For now, we'll assume the command handler returns the response.
+			// Let's adapt the command execution slightly for the bot.
+			switch command {
+			case "craft":
+				response, err = t.handler.HandleCraftCommand(userID, userName, args)
+			case "refine":
+				response, err = t.handler.HandleRefineCommand(userID, userName, args)
+			default:
+				response = "Unknown command. Available commands: /craft, /refine"
+			}
 		}
 
 		if err != nil {
@@ -163,31 +187,54 @@ func (t *TelegramClient) Stop() error {
 type GameCommandHandler struct {
 	dataStore DataStore
 
-	// Craft categories with their display names and emojis
-	craftCategories  map[string]string
-	refineCategories map[string]string
+	// New structure for craft categories
+	craftCategoryOrder []string
+	craftDisplayGroups map[string]string   // e.g., "mage" -> "🪄 Mage Tower"
+	craftsByGroup      map[string][]string // e.g., "mage" -> ["marmor", "mboots", ...]
+	craftItemNames     map[string]string   // e.g., "marmor" -> "🛡️ Armor"
+
+	refineCategories map[string]string // e.g., "ore" -> "⛏️ Ore"
+	refineTiers      []string          // e.g., ["I", "II", ...]
 }
 
 func NewGameCommandHandler(dataStore DataStore) *GameCommandHandler {
 	return &GameCommandHandler{
 		dataStore: dataStore,
-		craftCategories: map[string]string{
-			"armor":        "🛡️ Armor",
-			"boots":        "👢 Boots",
-			"helm":         "👑 Helm",
+		// Crafting categories setup
+		craftCategoryOrder: []string{"mage", "hunter", "warrior"},
+		craftDisplayGroups: map[string]string{
+			"mage":    "🪄 Mage Tower",
+			"hunter":  "🏹 Hunter Tower",
+			"warrior": "⚔️ Warrior Tower",
+		},
+		craftsByGroup: map[string][]string{
+			"mage":    {"marmor", "mboots", "mhelm", "firestaff", "holystaff", "arcane", "frost", "curse", "moffhand"},
+			"hunter":  {"harmor", "hboots", "hhelm", "bow", "dagger", "spear", "quarterstaff", "shapeshift", "druidstaff", "hoffhand"},
+			"warrior": {"warmor", "wboots", "whelm", "sword", "axe", "mace", "hammer", "gloves", "crossbow", "shield"},
+		},
+		craftItemNames: map[string]string{
+			"marmor":       "🛡️ mArmor",
+			"mboots":       "👢 mBoots",
+			"mhelm":        "👑 mHelm",
 			"firestaff":    "🔥 Fire Staff",
 			"holystaff":    "🌟 Holy Staff",
 			"arcane":       "🔮 Arcane",
 			"frost":        "❄️ Frost",
 			"curse":        "💀 Curse",
-			"offhand":      "📖 Offhand",
+			"moffhand":     "📖 Offhand",
+			"harmor":       "🛡️ hArmor",
+			"hboots":       "👢 hBoots",
+			"hhelm":        "👑 hHelm",
 			"bow":          "🏹 Bow",
-			"leatherboots": "👢 Leather Boots",
 			"dagger":       "🔪 Dagger",
 			"spear":        "🔱 Spear",
-			"quarterstaff": "🌲 Quarterstaff",
+			"quarterstaff": "🌲 Quarter Staff",
 			"shapeshift":   "🐾 Shapeshift",
 			"druidstaff":   "🌿 Druid Staff",
+			"hoffhand":     "📖 Offhand",
+			"warmor":       "🛡️ wArmor",
+			"wboots":       "👢 wBoots",
+			"whelm":        "👑 wHelm",
 			"sword":        "⚔️ Sword",
 			"axe":          "🪓 Axe",
 			"mace":         "🔨 Mace",
@@ -196,11 +243,13 @@ func NewGameCommandHandler(dataStore DataStore) *GameCommandHandler {
 			"crossbow":     "🏹 Crossbow",
 			"shield":       "🛡️ Shield",
 		},
+		// Refining setup
 		refineCategories: map[string]string{
 			"ore":    "⛏️ Ore",
 			"skin":   "🦎 Skin",
 			"cotton": "🌿 Cotton",
 		},
+		refineTiers: []string{"I", "II", "III", "IV", "V", "VI", "VII", "VIII"},
 	}
 }
 
@@ -214,18 +263,10 @@ func (g *GameCommandHandler) HandleCraftCommand(userID, userName string, args []
 		return g.formatCraftTable(data), nil
 	}
 
-	if len(args) == 1 {
-		craft := strings.ToLower(args[0])
-		if _, exists := g.craftCategories[craft]; !exists {
-			return fmt.Sprintf("Unknown craft: %s", craft), nil
-		}
-		return g.formatCraftRow(data, craft), nil
-	}
-
-	if len(args) == 3 && args[0] == "set" {
+	if len(args) == 3 && strings.ToLower(args[0]) == "set" {
 		craft := strings.ToLower(args[1])
-		if _, exists := g.craftCategories[craft]; !exists {
-			return fmt.Sprintf("Unknown craft: %s", craft), nil
+		if _, exists := g.craftItemNames[craft]; !exists {
+			return fmt.Sprintf("Unknown craft: %s. Use prefixed names like 'marmor', 'harmor', 'warmor'.", craft), nil
 		}
 
 		value, err := strconv.Atoi(args[2])
@@ -245,10 +286,18 @@ func (g *GameCommandHandler) HandleCraftCommand(userID, userName string, args []
 			return "", err
 		}
 
-		return fmt.Sprintf("✅ Set %s to %d for %s", g.craftCategories[craft], value, userName), nil
+		return fmt.Sprintf("✅ Set %s to %d for %s", g.craftItemNames[craft], value, userName), nil
 	}
 
-	return "Usage: /craft [craft_name] or /craft set [craft_name] [value]", nil
+	if len(args) == 1 {
+		craft := strings.ToLower(args[0])
+		if _, exists := g.craftItemNames[craft]; !exists {
+			return fmt.Sprintf("Unknown craft: %s", craft), nil
+		}
+		return g.formatCraftRow(data, craft), nil
+	}
+
+	return "Usage: /craft [prefixed_craft_name] or /craft set [prefixed_craft_name] [value]", nil
 }
 
 func (g *GameCommandHandler) HandleRefineCommand(userID, userName string, args []string) (string, error) {
@@ -261,21 +310,19 @@ func (g *GameCommandHandler) HandleRefineCommand(userID, userName string, args [
 		return g.formatRefineTable(data), nil
 	}
 
-	if len(args) == 1 {
-		refine := strings.ToLower(args[0])
-		if _, exists := g.refineCategories[refine]; !exists {
-			return fmt.Sprintf("Unknown refining: %s", refine), nil
-		}
-		return g.formatRefineRow(data, refine), nil
-	}
-
-	if len(args) == 3 && args[0] == "set" {
-		refine := strings.ToLower(args[1])
-		if _, exists := g.refineCategories[refine]; !exists {
-			return fmt.Sprintf("Unknown refining: %s", refine), nil
+	if len(args) == 4 && strings.ToLower(args[0]) == "set" {
+		refineType := strings.ToLower(args[1])
+		if _, exists := g.refineCategories[refineType]; !exists {
+			return fmt.Sprintf("Unknown refining type: %s", refineType), nil
 		}
 
-		value, err := strconv.Atoi(args[2])
+		levelStr := args[2]
+		_, err := strconv.Atoi(levelStr) // Just to validate it's a number
+		if err != nil {
+			return "Invalid level. Please provide a number (e.g., 4 for Tier IV).", nil
+		}
+
+		value, err := strconv.Atoi(args[3])
 		if err != nil {
 			return "Invalid value. Please provide a number.", nil
 		}
@@ -285,17 +332,28 @@ func (g *GameCommandHandler) HandleRefineCommand(userID, userName string, args [
 		}
 
 		g.ensureUser(data, userID, userName)
-		data.Users[userID].Refining[refine] = value
+		if data.Users[userID].Refining[refineType] == nil {
+			data.Users[userID].Refining[refineType] = make(map[string]int)
+		}
+		data.Users[userID].Refining[refineType][levelStr] = value
 
 		err = g.dataStore.SaveData(data)
 		if err != nil {
 			return "", err
 		}
 
-		return fmt.Sprintf("✅ Set %s to %d for %s", g.refineCategories[refine], value, userName), nil
+		return fmt.Sprintf("✅ Set %s T%s to %d for %s", g.refineCategories[refineType], levelStr, value, userName), nil
 	}
 
-	return "Usage: /refine [refine_type] or /refine set [refine_type] [value]", nil
+	if len(args) == 1 {
+		refineType := strings.ToLower(args[0])
+		if _, exists := g.refineCategories[refineType]; !exists {
+			return fmt.Sprintf("Unknown refining type: %s", refineType), nil
+		}
+		return g.formatRefineRow(data, refineType), nil
+	}
+
+	return "Usage: /refine [type] or /refine set [type] [level] [value]", nil
 }
 
 func (g *GameCommandHandler) ensureUser(data *GameData, userID, userName string) {
@@ -304,7 +362,7 @@ func (g *GameCommandHandler) ensureUser(data *GameData, userID, userName string)
 			ID:       userID,
 			Name:     userName,
 			Crafts:   make(map[string]int),
-			Refining: make(map[string]int),
+			Refining: make(map[string]map[string]int),
 		}
 	} else {
 		// Update username in case it changed
@@ -314,37 +372,38 @@ func (g *GameCommandHandler) ensureUser(data *GameData, userID, userName string)
 
 func (g *GameCommandHandler) formatCraftTable(data *GameData) string {
 	var result strings.Builder
-	result.WriteString("```\n🪄 CRAFT TABLE\n")
-	result.WriteString(strings.Repeat("=", 50) + "\n")
+	result.WriteString("```\n")
 
-	// Header with usernames
-	result.WriteString(fmt.Sprintf("%-20s", "Craft"))
 	userList := g.getSortedUsers(data)
-	for _, user := range userList {
-		result.WriteString(fmt.Sprintf("%-12s", user.Name))
-	}
-	result.WriteString("MAX\n")
-	result.WriteString(strings.Repeat("-", 50) + "\n")
 
-	// Craft rows
-	for craft, displayName := range g.craftCategories {
-		result.WriteString(fmt.Sprintf("%-20s", displayName))
-
-		values := make([]int, 0)
+	for _, groupKey := range g.craftCategoryOrder {
+		result.WriteString(g.craftDisplayGroups[groupKey] + "\n")
+		result.WriteString(fmt.Sprintf("%-20s", "Craft"))
 		for _, user := range userList {
-			value := user.Crafts[craft]
-			result.WriteString(fmt.Sprintf("%-12d", value))
-			if value > 0 {
-				values = append(values, value)
-			}
+			result.WriteString(fmt.Sprintf("%-12.12s", user.Name))
 		}
+		result.WriteString("MAX\n")
+		result.WriteString(strings.Repeat("-", 20+len(userList)*12+4) + "\n")
 
-		maxVal := 0
-		if len(values) > 0 {
-			sort.Sort(sort.Reverse(sort.IntSlice(values)))
-			maxVal = values[0]
+		for _, craftKey := range g.craftsByGroup[groupKey] {
+			displayName := g.craftItemNames[craftKey]
+			result.WriteString(fmt.Sprintf("%-20s", displayName))
+
+			maxVal := 0
+			for _, user := range userList {
+				value := user.Crafts[craftKey]
+				if value > maxVal {
+					maxVal = value
+				}
+				if value == 0 {
+					result.WriteString(fmt.Sprintf("%-12s", ""))
+				} else {
+					result.WriteString(fmt.Sprintf("%-12d", value))
+				}
+			}
+			result.WriteString(fmt.Sprintf("%d\n", maxVal))
 		}
-		result.WriteString(fmt.Sprintf("%d\n", maxVal))
+		result.WriteString("\n")
 	}
 
 	result.WriteString("```")
@@ -352,7 +411,7 @@ func (g *GameCommandHandler) formatCraftTable(data *GameData) string {
 }
 
 func (g *GameCommandHandler) formatCraftRow(data *GameData, craft string) string {
-	displayName := g.craftCategories[craft]
+	displayName := g.craftItemNames[craft]
 
 	type userValue struct {
 		name  string
@@ -401,69 +460,82 @@ func (g *GameCommandHandler) formatCraftRow(data *GameData, craft string) string
 func (g *GameCommandHandler) formatRefineTable(data *GameData) string {
 	var result strings.Builder
 	result.WriteString("```\n⛏️ REFINING TABLE\n")
-	result.WriteString(strings.Repeat("=", 50) + "\n")
 
-	// Header with usernames
-	result.WriteString(fmt.Sprintf("%-20s", "Refining"))
 	userList := g.getSortedUsers(data)
-	for _, user := range userList {
-		result.WriteString(fmt.Sprintf("%-12s", user.Name))
-	}
-	result.WriteString("MAX\n")
-	result.WriteString(strings.Repeat("-", 50) + "\n")
 
-	// Refining rows
-	for refine, displayName := range g.refineCategories {
-		result.WriteString(fmt.Sprintf("%-20s", displayName))
-
-		values := make([]int, 0)
+	for refineKey, displayName := range g.refineCategories {
+		result.WriteString("\n" + displayName + "\n")
+		result.WriteString(fmt.Sprintf("%-10s", "Level"))
 		for _, user := range userList {
-			value := user.Refining[refine]
-			result.WriteString(fmt.Sprintf("%-12d", value))
-			if value > 0 {
-				values = append(values, value)
-			}
+			result.WriteString(fmt.Sprintf("%-12.12s", user.Name))
 		}
+		result.WriteString("MAX\n")
+		result.WriteString(strings.Repeat("-", 10+len(userList)*12+4) + "\n")
 
-		maxVal := 0
-		if len(values) > 0 {
-			sort.Sort(sort.Reverse(sort.IntSlice(values)))
-			maxVal = values[0]
+		romanMap := map[string]string{"1": "I", "2": "II", "3": "III", "4": "IV", "5": "V", "6": "VI", "7": "VII", "8": "VIII"}
+
+		for i := 4; i <= 8; i++ {
+			levelStr := strconv.Itoa(i)
+			roman, _ := romanMap[levelStr]
+			result.WriteString(fmt.Sprintf("%-10s", roman))
+
+			maxVal := 0
+			for _, user := range userList {
+				value := 0
+				if user.Refining[refineKey] != nil {
+					value = user.Refining[refineKey][levelStr]
+				}
+
+				if value > maxVal {
+					maxVal = value
+				}
+
+				if value == 0 {
+					result.WriteString(fmt.Sprintf("%-12s", ""))
+				} else {
+					result.WriteString(fmt.Sprintf("%-12d", value))
+				}
+			}
+			result.WriteString(fmt.Sprintf("%d\n", maxVal))
 		}
-		result.WriteString(fmt.Sprintf("%d\n", maxVal))
 	}
 
 	result.WriteString("```")
 	return result.String()
 }
 
-func (g *GameCommandHandler) formatRefineRow(data *GameData, refine string) string {
-	displayName := g.refineCategories[refine]
+func (g *GameCommandHandler) formatRefineRow(data *GameData, refineType string) string {
+	displayName := g.refineCategories[refineType]
+	var result strings.Builder
+	result.WriteString(fmt.Sprintf("```\n%s Rankings:\n", displayName))
 
 	type userValue struct {
 		name  string
 		value int
 	}
 
-	var userValues []userValue
-	for _, user := range data.Users {
-		if value, exists := user.Refining[refine]; exists && value > 0 {
-			userValues = append(userValues, userValue{user.Name, value})
+	for i := 4; i <= 8; i++ {
+		levelStr := strconv.Itoa(i)
+		result.WriteString(fmt.Sprintf("\n--- TIER %s ---\n", levelStr))
+
+		var userValues []userValue
+		for _, user := range data.Users {
+			if user.Refining[refineType] != nil {
+				if value, exists := user.Refining[refineType][levelStr]; exists && value > 0 {
+					userValues = append(userValues, userValue{user.Name, value})
+				}
+			}
 		}
-	}
 
-	// Sort by value descending
-	sort.Slice(userValues, func(i, j int) bool {
-		return userValues[i].value > userValues[j].value
-	})
+		if len(userValues) == 0 {
+			result.WriteString("No data available\n")
+			continue
+		}
 
-	var result strings.Builder
-	result.WriteString(fmt.Sprintf("```\n%s Rankings:\n", displayName))
-	result.WriteString(strings.Repeat("=", 30) + "\n")
+		sort.Slice(userValues, func(i, j int) bool {
+			return userValues[i].value > userValues[j].value
+		})
 
-	if len(userValues) == 0 {
-		result.WriteString("No data available\n")
-	} else {
 		for i, uv := range userValues {
 			medal := ""
 			switch i {
@@ -551,7 +623,7 @@ func initConfig() {
 
 	// Set defaults
 	viper.SetDefault("DATA_FILE", "game_data.json")
-	viper.SetDefault("USER_ID_SALT", "change-this-salt")
+	viper.SetDefault("USER_ID_SALT", "change-this-salt-in-your-env-file")
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
@@ -560,51 +632,79 @@ func initConfig() {
 	}
 }
 
-// CLI Commands
-func createRootCmd() *cobra.Command {
+// Cobra Commands
+func createRootCmd(craftAction func(cmd, args string) (string, error), refineAction func(cmd, args string) (string, error)) *cobra.Command {
 	var rootCmd = &cobra.Command{
 		Use:   "albion-tracker",
 		Short: "Albion Online craft and refining tracker",
-		Long:  "A bot for tracking Albion Online crafting and refining levels",
+		Long:  "A bot for tracking Albion Online crafting and refining levels.",
+		// This makes sure cobra doesn't exit on error in bot mode
+		SilenceErrors: true,
+		SilenceUsage:  true,
 	}
 
-	// Server command
-	var serverCmd = &cobra.Command{
-		Use:   "server",
-		Short: "Start the Telegram bot server",
-		Run: func(cmd *cobra.Command, args []string) {
-			runServer()
-		},
-	}
+	var serverMode bool
+	rootCmd.PersistentFlags().BoolVarP(&serverMode, "server", "s", false, "Run in server mode for Telegram")
 
-	// CLI commands
+	// CLI/Bot commands
 	var craftCmd = &cobra.Command{
 		Use:   "craft [subcommand]",
-		Short: "Manage craft data",
-		Run: func(cmd *cobra.Command, args []string) {
-			runCLICommand("craft", args)
+		Short: "Manage craft data. Use 'm', 'h', 'w' prefixes for items (e.g. marmor, hboots).",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runCommand(serverMode, "craft", args)
+			return nil
 		},
 	}
 
 	var refineCmd = &cobra.Command{
 		Use:   "refine [subcommand]",
 		Short: "Manage refining data",
-		Run: func(cmd *cobra.Command, args []string) {
-			runCLICommand("refine", args)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runCommand(serverMode, "refine", args)
+			return nil
 		},
 	}
 
-	rootCmd.AddCommand(serverCmd)
-	rootCmd.AddCommand(craftCmd)
-	rootCmd.AddCommand(refineCmd)
+	// This allows `craft` and `refine` to be called without subcommands
+	craftCmd.RunE = func(cmd *cobra.Command, args []string) error {
+		runCommand(serverMode, "craft", args)
+		return nil
+	}
+
+	refineCmd.RunE = func(cmd *cobra.Command, args []string) error {
+		runCommand(serverMode, "refine", args)
+		return nil
+	}
+
+	rootCmd.AddCommand(craftCmd, refineCmd)
+
+	rootCmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if serverMode {
+			runServer()
+		} else {
+			// In CLI mode, if no command is given, show help.
+			return cmd.Help()
+		}
+		return nil
+	}
 
 	return rootCmd
+}
+
+// runCommand decides whether to run in server or CLI mode
+func runCommand(isServer bool, command string, args []string) {
+	if isServer {
+		// Server logic is initiated from the main function's server flag
+		log.Println("Server mode is active. Waiting for commands via messenger.")
+	} else {
+		runCLICommand(command, args)
+	}
 }
 
 func runServer() {
 	token := viper.GetString("TELEGRAM_BOT_TOKEN")
 	if token == "" {
-		log.Fatal("TELEGRAM_BOT_TOKEN is required")
+		log.Fatal("TELEGRAM_BOT_TOKEN is required for server mode")
 	}
 
 	dataFile := viper.GetString("DATA_FILE")
@@ -634,8 +734,28 @@ func runCLICommand(command string, args []string) {
 func main() {
 	initConfig()
 
-	rootCmd := createRootCmd()
-	if err := rootCmd.Execute(); err != nil {
-		log.Fatal(err)
+	// We are not using the actions here, as the logic is now inside the command runners
+	rootCmd := createRootCmd(nil, nil)
+
+	// A special check for server mode that bypasses Cobra's usual execution flow
+	// This allows the bot to run as a long-running process
+	args := os.Args[1:]
+	isServer := false
+	for _, arg := range args {
+		if arg == "-s" || arg == "--server" {
+			isServer = true
+			break
+		}
+	}
+
+	if isServer {
+		runServer()
+	} else {
+		// Run in CLI mode
+		if err := rootCmd.Execute(); err != nil {
+			// We print the error here because SilenceErrors is on
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
 	}
 }
