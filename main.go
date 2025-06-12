@@ -151,7 +151,6 @@ func (t *TelegramClient) Start() error {
 
 		switch command {
 		case "craft":
-			fmt.Println("HandleCraftCommand inside else block")
 			response, err = t.handler.HandleCraftCommand(userID, userName, args)
 		case "refine":
 			response, err = t.handler.HandleRefineCommand(userID, userName, args)

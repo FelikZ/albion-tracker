@@ -1,0 +1,4 @@
+[registry."192.168.0.110:5000"]
+  mirrors = ["192.168.0.110:5000"]
+  http = true
+  insecure = true

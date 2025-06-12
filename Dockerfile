@@ -1,16 +1,23 @@
-FROM golang:1.21-alpine AS builder
+## Build
+FROM --platform=$BUILDPLATFORM golang:1.21.5-alpine3.19 AS build
 
 WORKDIR /app
-COPY go.mod go.sum ./
+
+COPY go.mod ./
+COPY go.sum ./
 RUN go mod download
 
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o albion-tracker .
+COPY *.go ./
 
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
-WORKDIR /root/
+ARG TARGETPLATFORM=linux
+ARG TARGETARCH=arm
+RUN GOOS=$TARGETPLATFORM GOARCH=$TARGETARCH go build -o /albion-tracker
 
-COPY --from=builder /app/albion-tracker .
+## Deploy
+FROM alpine:3.19
 
-CMD ["./albion-tracker", "server"]
+WORKDIR /
+
+COPY --from=build /albion-tracker /
+
+ENTRYPOINT ["/albion-tracker", "--server"]
