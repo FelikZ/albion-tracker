@@ -4,13 +4,21 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/go-git/go-billy/v5/memfs"
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/go-git/go-git/v5/storage/memory"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -45,46 +53,188 @@ type CommandHandler interface {
 	HandleRefineCommand(userID, userName string, args []string) (string, error)
 }
 
-// File-based data store implementation
-type FileDataStore struct {
-	filename string
+// In-memory Git-based data store implementation
+type GitMemoryDataStore struct {
+	data      *GameData
+	mutex     sync.RWMutex
+	repo      *git.Repository
+	storer    *memory.Storage
+	filename  string
+	repoURL   string
+	username  string
+	token     string
+	branch    string
+	syncEvery time.Duration
 }
 
-func NewFileDataStore(filename string) *FileDataStore {
-	return &FileDataStore{filename: filename}
-}
-
-func (f *FileDataStore) LoadData() (*GameData, error) {
+func NewGitMemoryDataStore(filename, repoURL, username, token string, syncIntervalMinutes int) (*GitMemoryDataStore, error) {
+	storer := memory.NewStorage()
+	fs := memfs.New() // Use go-billy/v5's memfs
 	data := &GameData{Users: make(map[string]*UserData)}
 
-	if _, err := os.Stat(f.filename); os.IsNotExist(err) {
-		return data, nil
+	// Clone repository into memory with memfs
+	repo, err := git.Clone(storer, fs, &git.CloneOptions{
+		URL: repoURL,
+		Auth: &http.BasicAuth{
+			Username: username,
+			Password: token,
+		},
+		SingleBranch:  true,
+		ReferenceName: plumbing.NewBranchReferenceName("main"),
+	})
+	if err != nil && err != git.ErrRepositoryNotExists {
+		return nil, fmt.Errorf("failed to clone repository: %v", err)
 	}
 
-	file, err := ioutil.ReadFile(f.filename)
-	if err != nil {
-		return nil, err
-	}
-	// Handle empty file case
-	if len(file) == 0 {
-		return data, nil
+	// If repository exists, try to load game_data.json
+	if err == nil {
+		wt, err := repo.Worktree()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get worktree: %v", err)
+		}
+
+		file, err := wt.Filesystem.Open(filename)
+		if err == nil {
+			defer file.Close()
+			decoder := json.NewDecoder(file)
+			if err := decoder.Decode(data); err != nil {
+				return nil, fmt.Errorf("failed to decode game data: %v", err)
+			}
+		}
 	}
 
-	err = json.Unmarshal(file, data)
-	if err != nil {
-		return nil, err
-	}
-
-	return data, nil
+	return &GitMemoryDataStore{
+		data:      data,
+		repo:      repo,
+		storer:    storer,
+		filename:  filename,
+		repoURL:   repoURL,
+		username:  username,
+		token:     token,
+		branch:    "main",
+		syncEvery: time.Duration(syncIntervalMinutes) * time.Minute,
+	}, nil
 }
 
-func (f *FileDataStore) SaveData(data *GameData) error {
-	jsonData, err := json.MarshalIndent(data, "", "  ")
+func (g *GitMemoryDataStore) LoadData() (*GameData, error) {
+	g.mutex.RLock()
+	defer g.mutex.RUnlock()
+
+	// Return a deep copy to prevent external modifications
+	dataCopy := &GameData{Users: make(map[string]*UserData)}
+	for id, user := range g.data.Users {
+		userCopy := &UserData{
+			ID:       user.ID,
+			Name:     user.Name,
+			Crafts:   make(map[string]int),
+			Refining: make(map[string]map[string]int),
+		}
+		for k, v := range user.Crafts {
+			userCopy.Crafts[k] = v
+		}
+		for k, levels := range user.Refining {
+			userCopy.Refining[k] = make(map[string]int)
+			for l, v := range levels {
+				userCopy.Refining[k][l] = v
+			}
+		}
+		dataCopy.Users[id] = userCopy
+	}
+	return dataCopy, nil
+}
+
+func (g *GitMemoryDataStore) SaveData(data *GameData) error {
+	g.mutex.Lock()
+	defer g.mutex.Unlock()
+
+	// Update in-memory data
+	g.data = data
+
+	return nil
+}
+
+func (g *GitMemoryDataStore) syncToGitHub() error {
+	g.mutex.Lock()
+	defer g.mutex.Unlock()
+
+	// Serialize data
+	jsonData, err := json.MarshalIndent(g.data, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal game data: %v", err)
 	}
 
-	return ioutil.WriteFile(f.filename, jsonData, 0644)
+	// Get worktree
+	wt, err := g.repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("failed to get worktree: %v", err)
+	}
+
+	// Write file
+	f, err := wt.Filesystem.Create(g.filename)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %v", err)
+	}
+	if _, err := f.Write(jsonData); err != nil {
+		f.Close()
+		return fmt.Errorf("failed to write file: %v", err)
+	}
+	f.Close()
+
+	// Check for changes
+	status, err := wt.Status()
+	if err != nil {
+		return fmt.Errorf("failed to get worktree status: %v", err)
+	}
+	if status.IsClean() {
+		log.Println("No changes to commit")
+		return nil // Skip commit and push
+	}
+
+	// Stage file
+	if _, err := wt.Add(g.filename); err != nil {
+		return fmt.Errorf("failed to stage file: %v", err)
+	}
+
+	// Commit changes
+	commitMsg := fmt.Sprintf("Update %s at %s", g.filename, time.Now().Format(time.RFC3339))
+	_, err = wt.Commit(commitMsg, &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  g.username,
+			Email: fmt.Sprintf("%s@users.noreply.github.com", g.username),
+			When:  time.Now(),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to commit: %v", err)
+	}
+
+	// Push changes
+	err = g.repo.Push(&git.PushOptions{
+		Auth: &http.BasicAuth{
+			Username: g.username,
+			Password: g.token,
+		},
+		RefSpecs: []config.RefSpec{
+			config.RefSpec(fmt.Sprintf("refs/heads/%s:refs/heads/%s", g.branch, g.branch)),
+		},
+	})
+	if err != nil && err != git.NoErrAlreadyUpToDate {
+		return fmt.Errorf("failed to push: %v", err)
+	}
+
+	log.Printf("Successfully synced %s to GitHub", g.filename)
+	return nil
+}
+
+func (g *GitMemoryDataStore) startSyncGoroutine() {
+	ticker := time.NewTicker(g.syncEvery)
+	go func() {
+		for range ticker.C {
+			if err := g.syncToGitHub(); err != nil {
+				log.Printf("Failed to sync to GitHub: %v", err)
+			}
+		}
+	}()
 }
 
 // Telegram messenger client implementation
@@ -614,6 +764,10 @@ func initConfig() {
 	// Set defaults
 	viper.SetDefault("DATA_FILE", "game_data.json")
 	viper.SetDefault("USER_ID_SALT", "change-this-salt-in-your-env-file")
+	viper.SetDefault("GITHUB_REPO_URL", "")
+	viper.SetDefault("GITHUB_USERNAME", "")
+	viper.SetDefault("GITHUB_TOKEN", "")
+	viper.SetDefault("SYNC_INTERVAL_MINUTES", 60)
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
@@ -698,7 +852,19 @@ func runServer() {
 	}
 
 	dataFile := viper.GetString("DATA_FILE")
-	dataStore := NewFileDataStore(dataFile)
+	repoURL := viper.GetString("GITHUB_REPO_URL")
+	username := viper.GetString("GITHUB_USERNAME")
+	tokenGit := viper.GetString("GITHUB_TOKEN")
+	syncInterval := viper.GetInt("SYNC_INTERVAL_MINUTES")
+
+	dataStore, err := NewGitMemoryDataStore(dataFile, repoURL, username, tokenGit, syncInterval)
+	if err != nil {
+		log.Fatal("Failed to create data store:", err)
+	}
+
+	// Start sync goroutine
+	dataStore.startSyncGoroutine()
+
 	handler := NewGameCommandHandler(dataStore)
 
 	client, err := NewTelegramClient(token, handler)
@@ -714,11 +880,25 @@ func runServer() {
 
 func runCLICommand(command string, args []string) {
 	dataFile := viper.GetString("DATA_FILE")
-	dataStore := NewFileDataStore(dataFile)
+	repoURL := viper.GetString("GITHUB_REPO_URL")
+	username := viper.GetString("GITHUB_USERNAME")
+	tokenGit := viper.GetString("GITHUB_TOKEN")
+	syncInterval := viper.GetInt("SYNC_INTERVAL_MINUTES")
+
+	dataStore, err := NewGitMemoryDataStore(dataFile, repoURL, username, tokenGit, syncInterval)
+	if err != nil {
+		log.Fatal("Failed to create data store:", err)
+	}
+
 	handler := NewGameCommandHandler(dataStore)
 	cli := NewCLIClient(handler)
 
 	cli.HandleCommand(command, args)
+
+	// Sync immediately after CLI command
+	if err := dataStore.syncToGitHub(); err != nil {
+		log.Printf("Failed to sync to GitHub: %v", err)
+	}
 }
 
 func main() {
