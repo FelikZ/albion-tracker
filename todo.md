@@ -1,3 +1,3 @@
-- store file somewhere in cloud
-- separate key for release
-- deploy to NAS
+- store file somewhere in cloud (RAM and sync to github)
+- separate BOT / key for release
+- use vendor dir

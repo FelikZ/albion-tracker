@@ -47,3 +47,4 @@ pids
 # Build output
 /build/
 /dist/
+/bin/
