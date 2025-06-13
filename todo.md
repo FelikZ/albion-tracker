@@ -1,3 +1,1 @@
-- store file somewhere in cloud (RAM and sync to github)
-- separate BOT / key for release
 - use vendor dir

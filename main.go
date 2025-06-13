@@ -169,6 +169,17 @@ func (g *GitMemoryDataStore) syncToGitHub() error {
 		return fmt.Errorf("failed to get worktree: %v", err)
 	}
 
+	err = wt.Pull(&git.PullOptions{
+		RemoteName: "origin",
+		Auth: &http.BasicAuth{
+			Username: g.username,
+			Password: g.token,
+		},
+	})
+	if err != nil && err != git.NoErrAlreadyUpToDate {
+		return fmt.Errorf("can't pull remote: %v", err)
+	}
+
 	// Write file
 	f, err := wt.Filesystem.Create(g.filename)
 	if err != nil {
@@ -348,7 +359,7 @@ func NewGameCommandHandler(dataStore DataStore) *GameCommandHandler {
 			"warrior": "⚔️ Warrior Tower",
 		},
 		craftsByGroup: map[string][]string{
-			"mage":    {"marmor", "mboots", "mhelm", "firestaff", "holystaff", "arcane", "frost", "curse", "moffhand"},
+			"mage":    {"marmor", "mboots", "mhelm", "firestaff", "holystaff", "hallowfall", "arcane", "frost", "curse", "moffhand"},
 			"hunter":  {"harmor", "hboots", "hhelm", "bow", "dagger", "spear", "quarterstaff", "shapeshift", "druidstaff", "hoffhand"},
 			"warrior": {"warmor", "wboots", "whelm", "sword", "axe", "mace", "hammer", "gloves", "crossbow", "shield"},
 		},
@@ -358,6 +369,7 @@ func NewGameCommandHandler(dataStore DataStore) *GameCommandHandler {
 			"mhelm":        "👑 mHelm",
 			"firestaff":    "🔥 Fire Staff",
 			"holystaff":    "🌟 Holy Staff",
+			"hallowfall":   "😇 Hallowfall",
 			"arcane":       "🔮 Arcane",
 			"frost":        "❄️ Frost",
 			"curse":        "💀 Curse",
