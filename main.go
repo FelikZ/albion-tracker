@@ -415,13 +415,13 @@ func (g *GameCommandHandler) HandleCraftCommand(userID, userName string, args []
 		return g.formatCraftTable(data), nil
 	}
 
-	if len(args) == 3 && strings.ToLower(args[0]) == "set" {
-		craft := strings.ToLower(args[1])
+	if len(args) == 2 {
+		craft := strings.ToLower(args[0])
 		if _, exists := g.craftItemNames[craft]; !exists {
 			return fmt.Sprintf("Unknown craft: %s. Use prefixed names like 'marmor', 'harmor', 'warmor'.", craft), nil
 		}
 
-		value, err := strconv.Atoi(args[2])
+		value, err := strconv.Atoi(args[1])
 		if err != nil {
 			return "Invalid value. Please provide a number.", nil
 		}
@@ -449,7 +449,7 @@ func (g *GameCommandHandler) HandleCraftCommand(userID, userName string, args []
 		return g.formatCraftRow(data, craft), nil
 	}
 
-	return "Usage: /craft [prefixed_craft_name] or /craft set [prefixed_craft_name] [value]", nil
+	return "Usage: /craft [type]. To set value use /craft [type] [value]", nil
 }
 
 func (g *GameCommandHandler) HandleRefineCommand(userID, userName string, args []string) (string, error) {
@@ -462,19 +462,19 @@ func (g *GameCommandHandler) HandleRefineCommand(userID, userName string, args [
 		return g.formatRefineTable(data), nil
 	}
 
-	if len(args) == 4 && strings.ToLower(args[0]) == "set" {
-		refineType := strings.ToLower(args[1])
+	if len(args) == 3 {
+		refineType := strings.ToLower(args[0])
 		if _, exists := g.refineCategories[refineType]; !exists {
 			return fmt.Sprintf("Unknown refining type: %s", refineType), nil
 		}
 
-		levelStr := args[2]
+		levelStr := args[1]
 		_, err := strconv.Atoi(levelStr) // Just to validate it's a number
 		if err != nil {
 			return "Invalid level. Please provide a number (e.g., 4 for Tier IV).", nil
 		}
 
-		value, err := strconv.Atoi(args[3])
+		value, err := strconv.Atoi(args[2])
 		if err != nil {
 			return "Invalid value. Please provide a number.", nil
 		}
@@ -505,7 +505,7 @@ func (g *GameCommandHandler) HandleRefineCommand(userID, userName string, args [
 		return g.formatRefineRow(data, refineType), nil
 	}
 
-	return "Usage: /refine [type] or /refine set [type] [level] [value]", nil
+	return "Usage: /refine [type]. To set value use /refine [type] [level] [value]", nil
 }
 
 func (g *GameCommandHandler) ensureUser(data *GameData, userID, userName string) {
